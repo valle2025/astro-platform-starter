@@ -1,5 +1,6 @@
 from typing import Any, Dict, Optional
 import time
+import base64
 import httpx
 
 from tech4ai.actions.sdk.action_span import ActionSpan
@@ -10,11 +11,11 @@ from tech4ai.actions.sdk.memory_management import get_session_memory, set_sessio
 # CONFIG INTERNA (ajuste se precisar)
 # ======================================================================================
 
-# Endpoint de OAuth (username/password)
+# Endpoint de OAuth (client_credentials com Basic Auth)
 AUTH_URL = "https://portoapi-hml.portoseguro.com.br/oauth/v2/access-token"
-AUTH_USERNAME = "cd49436f-2074-4c47-8546-c403e4a4d4a6"
-AUTH_PASSWORD = "a5a49c7a-1a9b-49c5-b118-8ce34e7dbf28"
-AUTH_GRANT_TYPE = "password"
+AUTH_USERNAME = "cd49436f-2074-4c47-8546-c403e4a4d4a6"  # client_id
+AUTH_PASSWORD = "a5a49c7a-1a9b-49c5-b118-8ce34e7dbf28"  # client_secret
+AUTH_GRANT_TYPE = "client_credentials"
 AUTH_TIMEOUT = 20
 
 # Endpoint de negócio (GET)
@@ -37,14 +38,17 @@ MEM_EXPIRES_AT_KEY = "porto_auth_bearer_expires_at"
 def _obter_token() -> ActionResult:
     with ActionSpan(name="_obter_token") as span:
         try:
+            # Basic Auth: base64(client_id:client_secret)
+            credentials = f"{AUTH_USERNAME}:{AUTH_PASSWORD}"
+            encoded_credentials = base64.b64encode(credentials.encode()).decode()
+
             headers = {
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "Authorization": f"Basic {encoded_credentials}",
             }
             data = {
-                "grant_type": AUTH_GRANT_TYPE,
-                "username": AUTH_USERNAME,
-                "password": AUTH_PASSWORD,
+                "grant_type": AUTH_GRANT_TYPE,  # client_credentials
             }
 
             span.add_tags({"url": AUTH_URL, "method": "POST", "grant_type": AUTH_GRANT_TYPE})
@@ -64,7 +68,7 @@ def _obter_token() -> ActionResult:
                 return ActionFailure(
                     message="Falha ao obter token",
                     code="AUTH_UPSTREAM_ERROR",
-                    data=payload,  # retorna payload bruto de erro
+                    data=payload,
                 )
 
             token = payload.get("access_token")
@@ -74,7 +78,7 @@ def _obter_token() -> ActionResult:
                 return ActionFailure(
                     message="Campo 'access_token' ausente na resposta de auth",
                     code="TOKEN_MISSING",
-                    data=payload,  # retorna payload bruto para debug
+                    data=payload,
                 )
 
             now = int(time.time())
@@ -83,7 +87,6 @@ def _obter_token() -> ActionResult:
             set_session_memory(MEM_TOKEN_KEY, token)
             set_session_memory(MEM_EXPIRES_AT_KEY, expires_at)
 
-            # Retorna apenas o necessário; você pode querer o payload também:
             return ActionSuccess(message="Token obtido com sucesso", data={"access_token": token, "expires_at": expires_at})
 
         except httpx.TimeoutException as e:
@@ -121,9 +124,9 @@ def _processar_resposta_financeira(payload):
     """
     if not payload or 'Dados' not in payload:
         return payload
-    
+
     dados = payload['Dados']
-    
+
     # Processar e agrupar parcelas
     parcelas_processadas = []
     for parcela in dados:
@@ -135,7 +138,7 @@ def _processar_resposta_financeira(payload):
                 data_formatada = f"{data_vencimento[6:8]}/{data_vencimento[4:6]}/{data_vencimento[0:4]}"
             except:
                 data_formatada = data_vencimento
-        
+
         # Formatar valor (string -> R$ X,XX)
         montante_str = parcela.get('Montante', '0')
         try:
@@ -143,7 +146,7 @@ def _processar_resposta_financeira(payload):
             montante_formatado = f"R$ {montante_float:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
         except:
             montante_formatado = f"R$ {montante_str}"
-        
+
         parcela_processada = {
             "chave_agrupamento": parcela.get('ChaveAgrupamento', ''),
             "montante": montante_formatado,
@@ -168,15 +171,18 @@ def _processar_resposta_financeira(payload):
             "texto_mensagem": parcela.get('TextoMensagem', ''),
             "permite_aviso_pagamento": parcela.get('PermiteAvisoPagamento', False)
         }
-        
+
         parcelas_processadas.append(parcela_processada)
-    
+
     # Ordenar por chave de agrupamento
     parcelas_processadas.sort(key=lambda x: x['chave_agrupamento'])
-    
+
     # Calcular resumo
-    total_montante = sum(float(p['montante_original']) for p in parcelas_processadas)
-    
+    try:
+        total_montante = sum(float(p['montante_original']) for p in parcelas_processadas)
+    except Exception:
+        total_montante = 0.0
+
     return {
         "resumo": {
             "total_parcelas": len(parcelas_processadas),
@@ -224,7 +230,7 @@ def _chamar_financeiro(
             if ok:
                 # Processar a resposta para formato mais amigável
                 dados_processados = _processar_resposta_financeira(payload)
-                
+
                 # SUCESSO: devolve os dados processados
                 return ActionSuccess(
                     message="Consulta realizada com sucesso",
@@ -257,7 +263,7 @@ def consulta_parcela_com_auth_action(
     - Recebe apólice (obrigatório).
     - Garante bearer token válido (cache em session memory).
     - Executa GET com parâmetros fixos: tipoConsulta=3, sistemaOrigem=SUPERAPP, codigoTipoProduto=01, e apolice recebido.
-    - Retorna o JSON bruto (ou texto) da API em caso de sucesso; e o payload bruto de erro em caso de falha.
+    - Retorna os dados processados e formatados em caso de sucesso; e o payload bruto de erro em caso de falha.
     """
     with ActionSpan(name="consulta_parcela_com_auth_action") as span:
         if not apolice or not str(apolice).strip():
@@ -274,70 +280,21 @@ def consulta_parcela_com_auth_action(
         return _chamar_financeiro(token=token, apolice=apolice)
 
 # ======================================================================================
-# TESTE SIMPLES (para debug/desenvolvimento)
+# UTILITÁRIO DE TESTE (opcional)
 # ======================================================================================
 
 if __name__ == "__main__":
-    # Mock das dependências para teste
-    class MockActionSpan:
-        def __init__(self, name):
-            self.name = name
-        def __enter__(self):
-            return self
-        def __exit__(self, *args):
-            pass
-        def add_tags(self, tags):
-            print(f"[SPAN] {self.name}: {tags}")
-        def record_exception(self, e):
-            print(f"[SPAN] {self.name} EXCEPTION: {e}")
-
-    class MockActionResult:
-        def __init__(self, success, message, code=None, data=None):
-            self.success = success
-            self.message = message
-            self.code = code
-            self.data = data or {}
-
-    class MockActionSuccess(MockActionResult):
-        def __init__(self, message, data=None):
-            super().__init__(True, message, data=data)
-
-    class MockActionFailure(MockActionResult):
-        def __init__(self, message, code, data=None):
-            super().__init__(False, message, code, data=data)
-
-    class MockMemory:
-        def __init__(self):
-            self.data = {}
-        def get(self, key):
-            return self.data.get(key)
-        def set(self, key, value):
-            self.data[key] = value
-
-    # Substituir as dependências por mocks
-    ActionSpan = MockActionSpan
-    ActionSuccess = MockActionSuccess
-    ActionFailure = MockActionFailure
-    
-    # Mock simples de memória
-    _memory = MockMemory()
-    def get_session_memory(key):
-        return _memory.get(key)
-    def set_session_memory(key, value):
-        _memory.set(key, value)
-
-    print("=== TESTE DA ACTION ===")
-    print(f"Parâmetro: apolice = 10531297990333")
-    print()
-    
-    try:
-        result = consulta_parcela_com_auth_action(apolice="10531297990333")
-        print(f"RESULTADO: {result.message}")
-        if hasattr(result, 'data'):
-            print(f"DADOS: {result.data}")
-        if hasattr(result, 'code'):
-            print(f"CÓDIGO: {result.code}")
-    except Exception as e:
-        print(f"ERRO NO TESTE: {e}")
-        import traceback
-        traceback.print_exc()
+    # Exemplo rápido de teste
+    apolice_exemplo = "10531297990333"
+    res = consulta_parcela_com_auth_action(apolice=apolice_exemplo)
+    if isinstance(res, ActionSuccess):
+        resumo = res.data.get("resumo", {})
+        print("✅ Sucesso na consulta")
+        print(f"Total de parcelas: {resumo.get('total_parcelas')}")
+        print(f"Valor total: {resumo.get('valor_total')}")
+    else:
+        print("❌ Falha na consulta")
+        print(f"Código: {res.code}")
+        print(f"Mensagem: {res.message}")
+        if hasattr(res, "data"):
+            print(f"Detalhes: {res.data}")
