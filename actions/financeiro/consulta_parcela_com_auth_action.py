@@ -112,6 +112,83 @@ def _garantir_token_valido() -> ActionResult:
 
         return ActionSuccess(message="Token renovado", data={"token": token})
 
+def _processar_resposta_financeira(payload):
+    """
+    Processa a resposta da API financeira para formato mais amigável
+    - Formata Montante em R$
+    - Formata DataVencimentoLiquido
+    - Agrupa por ChaveAgrupamento
+    """
+    if not payload or 'Dados' not in payload:
+        return payload
+    
+    dados = payload['Dados']
+    
+    # Processar e agrupar parcelas
+    parcelas_processadas = []
+    for parcela in dados:
+        # Formatar data (YYYYMMDD -> DD/MM/YYYY)
+        data_vencimento = parcela.get('DataVencimentoLiquido', '')
+        data_formatada = ''
+        if data_vencimento and data_vencimento != '00000000':
+            try:
+                data_formatada = f"{data_vencimento[6:8]}/{data_vencimento[4:6]}/{data_vencimento[0:4]}"
+            except:
+                data_formatada = data_vencimento
+        
+        # Formatar valor (string -> R$ X,XX)
+        montante_str = parcela.get('Montante', '0')
+        try:
+            montante_float = float(montante_str)
+            montante_formatado = f"R$ {montante_float:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+        except:
+            montante_formatado = f"R$ {montante_str}"
+        
+        parcela_processada = {
+            "chave_agrupamento": parcela.get('ChaveAgrupamento', ''),
+            "montante": montante_formatado,
+            "data_vencimento": data_formatada,
+            "data_vencimento_original": data_vencimento,
+            "montante_original": montante_str,
+            "numero_boleto": parcela.get('NumeroBoleto', ''),
+            "situacao_parcela": parcela.get('SituacaoParcela', ''),
+            "empresa": parcela.get('Empresa', ''),
+            "codigo_susep": parcela.get('CodigoSusep', ''),
+            "tipo_contrato": parcela.get('TipoContrato', ''),
+            "codigo_tipo_produto": parcela.get('CodigoTipoProduto', ''),
+            "numero_documento": parcela.get('NumeroDocumento', ''),
+            "vigencia_de": parcela.get('VigenciaDe', ''),
+            "vigencia_ate": parcela.get('VigenciaAte', ''),
+            "forma_pagamento": parcela.get('FormaPagamento', ''),
+            "moeda_transacao": parcela.get('MoedaTransacao', ''),
+            "data_max_regularizacao": parcela.get('DataMaxRegularizacao', ''),
+            "nome_pagador": parcela.get('NomePagador', ''),
+            "cpf_cnpj_pagador": parcela.get('CpfCnpjPagador', ''),
+            "codigo_mensagem": parcela.get('CodigoMensagem', ''),
+            "texto_mensagem": parcela.get('TextoMensagem', ''),
+            "permite_aviso_pagamento": parcela.get('PermiteAvisoPagamento', False)
+        }
+        
+        parcelas_processadas.append(parcela_processada)
+    
+    # Ordenar por chave de agrupamento
+    parcelas_processadas.sort(key=lambda x: x['chave_agrupamento'])
+    
+    # Calcular resumo
+    total_montante = sum(float(p['montante_original']) for p in parcelas_processadas)
+    
+    return {
+        "resumo": {
+            "total_parcelas": len(parcelas_processadas),
+            "valor_total": f"R$ {total_montante:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.'),
+            "valor_total_numerico": total_montante,
+            "ultima_atualizacao": payload.get('DataUltimaAtualizacao', ''),
+            "hora_atualizacao": payload.get('HoraUltimaAtualizacao', '')
+        },
+        "parcelas": parcelas_processadas,
+        "dados_originais": payload  # Manter dados originais para referência
+    }
+
 def _chamar_financeiro(
     *,
     token: str,
@@ -145,10 +222,13 @@ def _chamar_financeiro(
                 payload = {"raw_text": resp.text}
 
             if ok:
-                # SUCESSO: devolve o JSON bruto da API
+                # Processar a resposta para formato mais amigável
+                dados_processados = _processar_resposta_financeira(payload)
+                
+                # SUCESSO: devolve os dados processados
                 return ActionSuccess(
                     message="Consulta realizada com sucesso",
-                    data=payload,
+                    data=dados_processados,
                 )
             else:
                 # ERRO: devolve o JSON/texto bruto de erro
