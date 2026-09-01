@@ -49,3 +49,36 @@ netlify dev
 ```
 
 If your browser doesn't navigate to the site automatically, visit [localhost:8888](http://localhost:8888).
+
+## Perplexity MCP Server
+
+This repo ships a project-scoped MCP config (`.mcp.json`) for the [official Perplexity MCP server](https://github.com/perplexityai/modelcontextprotocol), which gives Claude Code real-time web search, reasoning, and research tools.
+
+The API key is **not** stored in the repo — `.mcp.json` expands `${PERPLEXITY_API_KEY}` from your environment. Get a key at [console.perplexity.ai](https://console.perplexity.ai) and export it before starting Claude Code:
+
+```bash
+export PERPLEXITY_API_KEY="your_key_here"
+claude
+```
+
+Claude Code asks for approval the first time it loads a project-scoped server. Verify with `/mcp` or:
+
+```bash
+claude mcp list
+```
+
+### Alternatives
+
+Register the local (stdio) server just for yourself, outside the repo:
+
+```bash
+claude mcp add perplexity --env PERPLEXITY_API_KEY="your_key_here" -- npx -y @perplexity-ai/mcp-server
+```
+
+Or use Perplexity's hosted server over HTTP — nothing to install or update:
+
+```bash
+claude mcp add --transport http perplexity https://api.perplexity.ai/mcp --header "Authorization: Bearer YOUR_API_KEY"
+```
+
+Optional environment variables: `PERPLEXITY_TIMEOUT_MS` (default `300000`), `PERPLEXITY_BASE_URL`, `PERPLEXITY_LOG_LEVEL`, `PERPLEXITY_PROXY`.
